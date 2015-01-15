@@ -33,6 +33,7 @@
 	  (vector-push c string)))
     string))
 
+#+ccl
 (defun javad-connect (host &optional (port 8002))
   (let* ((socket  (ccl:make-socket :remote-host host :remote-port port))
 	 ;(echo-stream (make-echo-stream socket *standard-output*))
