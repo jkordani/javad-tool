@@ -13,3 +13,4 @@ javad-parse-message will attempt to parse a generic message from a logged in jav
 javad-parse-vg-message takes a generic message and assumes its a geodetic velocity message, and parses it further, overwriting the input message object's data field with the appropriate values.
 
 TODO.  Implement DTP client and server for fetching files and pushing firmware
+provide convenience functions for consuming opus email and prepping commands for setting the apc and reference point for the reciever
