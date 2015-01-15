@@ -4,25 +4,6 @@
 
 ;;; "javad-tool" goes here. Hacks and glory await!
 
-(defun main ()
-  (with-ltk ()
-    (let* ((f-connect (make-instance 'frame))
-	   (t-connect (make-instance 'entry
-				     :master f-connect))
-	   (b-connect (make-instance 'button
-				     :master f-connect
-				     :text "Connect"
-				     :command (lambda () (gui-connect (text t-connect)))))
-	   (l-connect (make-instance 'label
-				     :master f-connect
-				     :text "ip[:port]")))
-      (pack f-connect)
-      (pack l-connect :side :left)
-      (pack t-connect :side :left)
-      (pack b-connect :side :left))))
-
-(defun gui-connect (url)
-  (format t "ok well ~A thats fantastic, you asshole~%" url))
 
 (defun javad-login (stream)
   "Reads from a given stream until the password is scarfed from the header"
