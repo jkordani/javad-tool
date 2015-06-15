@@ -41,6 +41,37 @@
     (javad-login socket)
     socket))
 
+(defun packets-from-pcap (filename &key (limit -1))
+  (plokami:with-pcap-reader (pcap filename :snaplen 1500)
+    (let ((timestamps nil))
+      (plokami:capture pcap limit
+		       (lambda (sec usec caplen len buffer)
+			 ;; Packet processing code here
+			 ;; (format t "Packet length: ~A bytes, on the wire: ~A bytes ~D~%"
+			 ;; 	      caplen
+			 ;; 	      len
+			 ;; 	      (ubin::coerce-seq-to-numeric (subseq buffer 1242 1246)))
+			 (push (subseq buffer 0 1500) timestamps)))
+      (reverse timestamps))))
+
+(defun packets-to-messages (packets)
+  (loop for packet in packets
+		      ;; do (break)
+	for pos = (search (ccl:encode-string-to-octets "~~") packet)
+	;; do (break)
+	unless (null pos)
+	  append (loop  for message = (ccl:with-input-from-vector (msgvec (subseq packet pos))
+					(javad-parse-message msgvec))
+			do (setf pos (cl-ppcre:scan "[a-zA-Z]{2}[a-eA-E0-9]{3}" (ccl:decode-string-from-octets packet) :start (+ pos 1 (slot-value message 'length))))
+			until (null pos)
+			until (equal "::" (slot-value message 'type)) ;find epoch end
+			collect message)))
+
+(defun lists-to-csv (pathname lists)
+  (with-open-file (outfile pathname :direction :output
+				    :if-exists :supersede)
+    (loop for entry in lists
+	  do (format outfile "~{~A~^,~}~%" entry))))
 
 
 (defun javad-generic-command (stream command)
@@ -60,7 +91,7 @@
   (let ((message (make-instance 'javad-generic-message)))
     (with-slots (type length) message
       (setf type (format nil "~a~a" (read-char is) (read-char is)))
-      (setf length (parse-integer (format nil "~a~a~a" (read-char is) (read-char is) (read-char is)) :radix 16))
+      (setf length (parse-integer (format nil "~a~a~a" (read-char is) (read-char is) (read-char is)) :radix 16 :junk-allowed nil))
       (setf (slot-value message 'data) (make-array length :element-type '(unsigned-byte 8) :fill-pointer 0 :adjustable t))
       (dotimes (j length)
 	(vector-push (read-byte is) (slot-value message 'data)))
@@ -85,6 +116,31 @@
     (setf (slot-value vg-message 'data) vals)
     vg-message))
 
+(defun javad-parse-ar-message (ar-message)
+  ;;remember to check for endianness.  format is
+  ;;u4 time, f4 pitch,roll,heading,pitchRMS,rollRMS,headingRMS
+  ;;u1 flags,checksum
+  ;; returns data as alist
+  (let ((data (slot-value ar-message 'data))
+	(tempvals nil)
+	(returnvals nil)
+	(offset 0)
+	(val 0))
+    (dotimes (j 7)
+      (setf val 0)
+      (setf (ldb (byte 8 0)  val) (elt data (+ 0 offset)))
+      (setf (ldb (byte 8 8)  val) (elt data (+ 1 offset)))
+      (setf (ldb (byte 8 16) val) (elt data (+ 2 offset)))
+      (setf (ldb (byte 8 24) val) (elt data (+ 3 offset)))
+      (setf offset (+ 4 offset))
+      (push val tempvals))
+    (dotimes (j 2)
+     (push (elt data (+ offset j)) tempvals))
+    (setf tempvals (nreverse tempvals))
+    (setf tempvals (cons (car tempvals)
+			 (append (mapcar #'ie3fp:decode-ieee-float (subseq tempvals 1 7))
+				 (last tempvals 2))))
+    tempvals))
 
 (defun javad-get-velocity (is)
   ; assumes logged in javad on input stream
@@ -93,3 +149,57 @@
   (let ((message (javad-parse-vg-message (javad-parse-message is))))
     (javad-read is)
     (slot-value message 'data)))
+
+
+(defun dtp-transmitter-prep (data &key (block-size 512) (block-num 0) (crc 0))
+  "Data should be byte vector, returns alist of blocks, data checksum?"
+  (if (< (length data) block-size)
+      (cons (cons block-num (list data (crc16-lisp data))) nil)
+      (let* ((block-data (subseq data 0 (1+ block-size)))
+	     (new-crc (crc16-lisp block-data)))
+	(cons (cons block-num (list block-data new-crc))
+	      (dtp-transmitter-prep
+	       (subseq
+		data
+		(1+ block-size))
+	       :block-size block-size
+	       :block-num (1+ block-num)
+	       :crc new-crc)))))
+
+
+;; < Pure lisp >
+(declaim (inline update-crc16-lisp))
+(defun update-crc16-lisp (crc data)
+  (declare (type (unsigned-byte 16) crc)
+           (type (unsigned-byte  8) data)
+           (optimize (speed 3) (safety 0) (debug 0)))
+  (setf data (the (unsigned-byte 8) (ldb (byte 8 0) (logand crc #x9021))))
+  (setf data (ash data 4))
+  (the (unsigned-byte 16)
+    (ldb (byte 16 0)
+         (logxor (logior (the (unsigned-byte 16) (ash data 8))
+                         (the (unsigned-byte  8) (ldb (byte 8 0) (ash crc -8))))
+                 (the (unsigned-byte  8) (ldb (byte 8 0) (ash data -4)))
+                 (the (unsigned-byte 16) (ash data  3))))))
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(declaim (inline %crc16-lisp))
+(defun %crc16-lisp (data)
+  (declare (type (simple-array (unsigned-byte 8) (*)) data)
+           (optimize (speed 3) (safety 0) (debug 0)))
+  (let ((crc #x0000))
+    (declare (type (unsigned-byte 16) crc))
+    (dotimes (i (length data) crc)
+      (declare (type fixnum i))
+      (setf crc (the (unsigned-byte 16)
+                  (update-crc16-lisp crc (the (unsigned-byte 8)
+                                            (aref data i))))))))
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+(defun crc16-lisp (data)
+  (let ((process-data (typecase data
+                        ((simple-array (unsigned-byte 8) (*)) data)
+                        (t (make-array (length data)
+                                       :element-type '(unsigned-byte 8)
+                                       :initial-contents data)))))
+    (declare (type (simple-array (unsigned-byte 8) (*)) process-data))
+    (%crc16-lisp process-data)))
+;; </ Pure Lisp >
