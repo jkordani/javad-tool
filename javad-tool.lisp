@@ -150,22 +150,119 @@
     (javad-read is)
     (slot-value message 'data)))
 
-
+;;make struct of block before, fill it out, post process with last block type for dataleng vs seq
 (defun dtp-transmitter-prep (data &key (block-size 512) (block-num 0) (crc 0))
   "Data should be byte vector, returns alist of blocks, data checksum?"
-  (if (< (length data) block-size)
-      (cons (cons block-num (list data (crc16-lisp data))) nil)
-      (let* ((block-data (subseq data 0 (1+ block-size)))
-	     (new-crc (crc16-lisp block-data)))
-	(cons (cons block-num (list block-data new-crc))
-	      (dtp-transmitter-prep
-	       (subseq
-		data
-		(1+ block-size))
-	       :block-size block-size
-	       :block-num (1+ block-num)
-	       :crc new-crc)))))
+  (if (/= (length data) 0)
+      (if (< (length data) block-size)
+	  (let ((orig-length (length data))
+		(data (concatenate 'vector data 
+				   (make-array (- block-size (length data)) 
+					       :initial-element 0)))) 
+	    (cons (list #x04
+			orig-length
+			data
+			(crc16-lisp data)
+			#x03) 
+		  nil))
+	  (let* ((block-data (subseq data 0 block-size))
+		 (new-crc (crc16-lisp block-data))
+		 (type (if (= block-size (length data))
+			   #x04
+			   #x02)))
+	    (cons (list type
+			(if (= type #x04)
+			    (length data)
+			    block-num)
+			block-data 
+			new-crc
+			#x03)
+		  (dtp-transmitter-prep (subseq data block-size)
+					:block-size block-size
+					:block-num (1+ block-num)
+					:crc new-crc))))))
 
+(defun dtp-receiver (stream &key (state '(:init t :task ack)))
+  (let ((type nil))
+    (cond 
+      ((getf state :init) (setf (getf state :init) nil)
+       (setf (getf state :task) 'rcv)
+       (setf (getf state :blocks) nil)
+       (setf (getf state :next-block) 0)
+       (setf (getf state :continue) t)
+       (write-byte #x15 stream) ;nack to init transfer
+       )
+     
+      ((equal (getf state :task) 'ack) 
+       (write-byte #x06 stream)
+       (setf (getf state :task) 'rcv)
+       (setf (getf state :continue) t)
+       (1+ (getf state :next-block)))
+      
+      ((equal (getf state :task) 'rcv)
+       (princ "inner rcv")
+       (setf (getf state :task) 'ack)
+       (setf type (read-byte stream))
+       (setf (getf state :blocks) (append (getf state :blocks) (list type
+								     (read-byte stream)
+								     (read-byte stream))))
+       (if (= type #x02)
+	   (setf (getf state :continue) t)
+	   (setf (getf state :continue) nil)))))
+  state)
+
+(defun dtp-transmitter (stream &key state)
+  ;assumes blocks are loaded in state
+  (let ((rcv-ack (read-byte stream))
+	(block nil))
+    (cond 
+      ((and (getf state :init)
+	    (equal rcv-ack 'nack))
+       (setf (getf state :init) nil)
+       (setf (getf state :next-block) 0))
+      (t (1+ (getf state :next-block))))
+
+    (setf block (nth (getf state :next-block) (getf state :blocks)))
+    (write-byte (car block) stream)
+    (write-byte (cadr block) stream)
+    (write-byte (caddr block) stream)
+    state))
+
+(defun dtp-trans-receive (data &key (blocksize 512)) ;need to send ack then read ack then send block then read block, and... can't be in the same file...???
+  (ccl:with-open-soclet (trans-socket) :local-port 8002
+			:connect :passive
+			(ccl:with-open-socket (recv-socket) :remote-port 8002
+)
+			(let* (
+			       ;; (stream (open "/tmp/pipe" :direction :io 
+			       ;; 	       :element-type '(unsigned-byte 8)
+			       ;; 	       :if-exists :supersede))
+			       (vec (make-array 10 :element-type '(unsigned-byte 8) :fill-pointer 0 :adjustable t))
+			       (stream (make-two-way-stream (flexi-streams:make-in-memory-input-stream vec)
+							    (flexi-streams:make-in-memory-output-stream :element-type '(unsigne-byte 8))))
+			       (continue t)
+			       (receiver-state `(:init t :block-size ,blocksize))
+			       (transmitter-state `(:init t :blocks ,(dtp-transmitter-prep data
+											   :block-size blocksize))))
+			  (loop ;rcv ack trans write rcv read
+			     while continue
+			     do (when continue
+				  (setf receiver-state (dtp-receiver stream 
+								     :state receiver-state))
+				  (setf continue (getf receiver-state :continue))
+				  (princ "rcv ack"))
+			       
+			     do (progn 
+				  (setf transmitter-state (dtp-transmitter stream
+									   :state transmitter-state))
+				  (setf continue (getf transmitter-state :continue))
+				  (princ "trans write"))
+			     do (when continue
+				  (setf receiver-state (dtp-receiver stream 
+								     :state receiver-state))
+				  (setf continue (getf receiver-state :continue))
+				  (princ "rcv read")))
+			  receiver-state)))
 
 ;; < Pure lisp >
 (declaim (inline update-crc16-lisp))
