@@ -209,6 +209,7 @@
        (if (= type #x02)
 	   (setf (getf state :continue) t)
 	   (setf (getf state :continue) nil)))))
+  (ccl:stream-force-output stream)
   state)
 
 (defun dtp-transmitter (stream &key state)
@@ -226,43 +227,44 @@
     (write-byte (car block) stream)
     (write-byte (cadr block) stream)
     (write-byte (caddr block) stream)
+    (ccl:stream-force-output stream)
     state))
 
 (defun dtp-trans-receive (data &key (blocksize 512)) ;need to send ack then read ack then send block then read block, and... can't be in the same file...???
-  (ccl:with-open-soclet (trans-socket) :local-port 8002
-			:connect :passive
-			(ccl:with-open-socket (recv-socket) :remote-port 8002
-)
-			(let* (
-			       ;; (stream (open "/tmp/pipe" :direction :io 
-			       ;; 	       :element-type '(unsigned-byte 8)
-			       ;; 	       :if-exists :supersede))
-			       (vec (make-array 10 :element-type '(unsigned-byte 8) :fill-pointer 0 :adjustable t))
-			       (stream (make-two-way-stream (flexi-streams:make-in-memory-input-stream vec)
-							    (flexi-streams:make-in-memory-output-stream :element-type '(unsigne-byte 8))))
-			       (continue t)
-			       (receiver-state `(:init t :block-size ,blocksize))
-			       (transmitter-state `(:init t :blocks ,(dtp-transmitter-prep data
-											   :block-size blocksize))))
-			  (loop ;rcv ack trans write rcv read
-			     while continue
-			     do (when continue
-				  (setf receiver-state (dtp-receiver stream 
-								     :state receiver-state))
-				  (setf continue (getf receiver-state :continue))
-				  (princ "rcv ack"))
-			       
-			     do (progn 
-				  (setf transmitter-state (dtp-transmitter stream
-									   :state transmitter-state))
-				  (setf continue (getf transmitter-state :continue))
-				  (princ "trans write"))
-			     do (when continue
-				  (setf receiver-state (dtp-receiver stream 
-								     :state receiver-state))
-				  (setf continue (getf receiver-state :continue))
-				  (princ "rcv read")))
-			  receiver-state)))
+  (ccl:with-open-socket (trans-socket :local-port 8002
+				      :connect :passive
+				      :address-family :internet)
+			(ccl:with-open-socket (recv-socket :remote-port 8002
+							   :address-family :internet)
+					      (let* (
+						     ;; (stream (open "/tmp/pipe" :direction :io 
+						     ;; 	       :element-type '(unsigned-byte 8)
+						     ;; 	       :if-exists :supersede))
+						     
+						     (continue t)
+						     (receiver-state `(:init t :block-size ,blocksize))
+						     (transmitter-state `(:init t :blocks ,(dtp-transmitter-prep data
+														 :block-size blocksize)))
+						     (trans-stream (ccl:accept-connection trans-socket)))
+						(loop ;rcv ack trans write rcv read
+						   while continue
+						   do (when continue
+							(setf receiver-state (dtp-receiver recv-socket 
+											   :state receiver-state))
+							(setf continue (getf receiver-state :continue))
+							(princ "rcv ack"))
+						     
+						   do (progn 
+							(setf transmitter-state (dtp-transmitter trans-stream
+												 :state transmitter-state))
+							(setf continue (getf transmitter-state :continue))
+							(princ "trans write"))
+						   do (when continue
+							(setf receiver-state (dtp-receiver recv-socket
+											   :state receiver-state))
+							(setf continue (getf receiver-state :continue))
+							(princ "rcv read")))
+						receiver-state))))
 
 ;; < Pure lisp >
 (declaim (inline update-crc16-lisp))
