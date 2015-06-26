@@ -203,9 +203,7 @@
        (princ "inner rcv")
        (setf (getf state :task) 'ack)
        (setf type (read-byte stream))
-       (setf (getf state :blocks) (append (getf state :blocks) (list type
-								     (read-byte stream)
-								     (read-byte stream))))
+       (setf (getf state :blocks) (append (getf state :blocks) (list type)))
        (if (= type #x02)
 	   (setf (getf state :continue) t)
 	   (setf (getf state :continue) nil)))))
@@ -218,24 +216,26 @@
 	(block nil))
     (cond 
       ((and (getf state :init)
-	    (equal rcv-ack 'nack))
+	    (equal rcv-ack #x15))
        (setf (getf state :init) nil)
        (setf (getf state :next-block) 0))
-      (t (1+ (getf state :next-block))))
+      (t (incf (getf state :next-block))))
 
     (setf block (nth (getf state :next-block) (getf state :blocks)))
     (write-byte (car block) stream)
-    (write-byte (cadr block) stream)
-    (write-byte (caddr block) stream)
+    ;; (write-byte (cadr block) stream)
+    ;; (write-byte (caddr block) stream)
     (ccl:stream-force-output stream)
     state))
 
 (defun dtp-trans-receive (data &key (blocksize 512)) ;need to send ack then read ack then send block then read block, and... can't be in the same file...???
   (ccl:with-open-socket (trans-socket :local-port 8002
 				      :connect :passive
-				      :address-family :internet)
+				      :address-family :internet
+				      :reuse-address t)
 			(ccl:with-open-socket (recv-socket :remote-port 8002
-							   :address-family :internet)
+							   :address-family :internet
+							   :reuse-address t)
 					      (let* (
 						     ;; (stream (open "/tmp/pipe" :direction :io 
 						     ;; 	       :element-type '(unsigned-byte 8)
@@ -257,7 +257,7 @@
 						   do (progn 
 							(setf transmitter-state (dtp-transmitter trans-stream
 												 :state transmitter-state))
-							(setf continue (getf transmitter-state :continue))
+							;; (setf continue (getf transmitter-state :continue))
 							(princ "trans write"))
 						   do (when continue
 							(setf receiver-state (dtp-receiver recv-socket
