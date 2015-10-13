@@ -150,6 +150,31 @@
     (javad-read is)
     (slot-value message 'data)))
 
+;;print /par/ref/pos/gps/geo /par/ref/arp/gps/geo
+;; Default: {W84,N00d00m00.000000s,E00d00m00.000000s,+0.0000}
+
+;; elevation mask
+;; /par/lock/elm, -90,90
+;; for file set,/par/out/elm/cur/file/a,10
+;;          create,/log/fielanme:a
+;;          em,/cur/file/a,def:30
+;; first sets elevation mask for log capture
+;; second makes a file with the current file name
+;; third sets the output iteratoin to 30 seconds
+
+;; base statoin params
+;; #set,/par/pos/elm,15                 # Set elevation mask
+;; #set,/par/ref/avg/span,180
+;; #set,/par/ref/avg/mode,on
+;; #em,/dev/tcpo/c,/msg/rtcm3/{1004,1012,1006:10,1008:10}:1  # Enable RTCM3 messages at 1Hz
+
+
+
+(defun get-pos-apc (stream)
+  (javad-generic-command stream "print,/par/ref/pos/gps/geo")
+  (javad-read stream))
+
+
 ;;make struct of block before, fill it out, post process with last block type for dataleng vs seq
 (defun dtp-transmitter-prep (data &key (block-size 512) (block-num 0) (crc 0))
   "Data should be byte vector, returns alist of blocks, data checksum?"
