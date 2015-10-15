@@ -154,8 +154,8 @@
 
 ;;print /par/ref/pos/gps/geo /par/ref/arp/gps/geo
 ;; Default: {W84,N00d00m00.000000s,E00d00m00.000000s,+0.0000}
-;; %01252%set,/par/ref/pos//geo,{W84,N11d32m32.901643s,E43d09m26.726752s,25.9588}
-;; %01253%set,/par/ref/arp//geo,{W84,N11d32m32.901643s,E43d9m26.726752s,25.9588}
+;; %01252%set,/par/ref/pos//geo,
+;; %01253%set,/par/ref/arp//geo,
 
 ;; elevation mask
 ;; /par/lock/elm, -90,90
@@ -347,40 +347,3 @@
 							(setf continue (getf receiver-state :continue))
 							(princ "rcv read")))
 						receiver-state))))
-
-;; < Pure lisp >
-(declaim (inline update-crc16-lisp))
-(defun update-crc16-lisp (crc data)
-  (declare (type (unsigned-byte 16) crc)
-           (type (unsigned-byte  8) data)
-           (optimize (speed 3) (safety 0) (debug 0)))
-  (setf data (the (unsigned-byte 8) (ldb (byte 8 0) (logand crc #x9021))))
-  (setf data (ash data 4))
-  (the (unsigned-byte 16)
-    (ldb (byte 16 0)
-         (logxor (logior (the (unsigned-byte 16) (ash data 8))
-                         (the (unsigned-byte  8) (ldb (byte 8 0) (ash crc -8))))
-                 (the (unsigned-byte  8) (ldb (byte 8 0) (ash data -4)))
-                 (the (unsigned-byte 16) (ash data  3))))))
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(declaim (inline %crc16-lisp))
-(defun %crc16-lisp (data)
-  (declare (type (simple-array (unsigned-byte 8) (*)) data)
-           (optimize (speed 3) (safety 0) (debug 0)))
-  (let ((crc #x0000))
-    (declare (type (unsigned-byte 16) crc))
-    (dotimes (i (length data) crc)
-      (declare (type fixnum i))
-      (setf crc (the (unsigned-byte 16)
-                  (update-crc16-lisp crc (the (unsigned-byte 8)
-                                            (aref data i))))))))
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-(defun crc16-lisp (data)
-  (let ((process-data (typecase data
-                        ((simple-array (unsigned-byte 8) (*)) data)
-                        (t (make-array (length data)
-                                       :element-type '(unsigned-byte 8)
-                                       :initial-contents data)))))
-    (declare (type (simple-array (unsigned-byte 8) (*)) process-data))
-    (%crc16-lisp process-data)))
-;; </ Pure Lisp >
