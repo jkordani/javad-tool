@@ -1,4 +1,10 @@
-This library provides helper functions for accessing a javad device over a stream, and provides an example about how to consume one of the binary messages that the unit can send.
+This library provides helper functions for accessing a javad device over a stream, and provides an example about how to consume one of the binary messages that the unit can send
+.
+
+Now supports starting/stopping/downloading log files!
+
+I've also added a wrapper for starting and stopping the positoin averaging process
+
 
 If using ccl, there is a convenience function for opening a socket and logging into the javad unit in java-connect.  otherwise bring your own socket.  I'll get around to learning usocket some day....
 
@@ -12,5 +18,6 @@ javad-parse-message will attempt to parse a generic message from a logged in jav
 
 javad-parse-vg-message takes a generic message and assumes its a geodetic velocity message, and parses it further, overwriting the input message object's data field with the appropriate values.
 
-TODO.  Implement DTP client and server for fetching files and pushing firmware
-provide convenience functions for consuming opus email and prepping commands for setting the apc and reference point for the reciever
+TODO.
+provide convenience functions for consuming opus email in order to prep commands for setting the apc and reference point for the reciever.
+make an application on top of all of this, make it more user friendly?  socket times out due to inactivity, and spurious output must be manually cleared.
