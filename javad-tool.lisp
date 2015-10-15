@@ -39,6 +39,8 @@
 	 ;(echo-stream (make-echo-stream socket *standard-output*))
 	 )
     (javad-login socket)
+    (force-output socket)
+    (javad-read socket)
     socket))
 
 (defun packets-from-pcap (filename &key (limit -1))
@@ -152,28 +154,83 @@
 
 ;;print /par/ref/pos/gps/geo /par/ref/arp/gps/geo
 ;; Default: {W84,N00d00m00.000000s,E00d00m00.000000s,+0.0000}
+;; %01252%set,/par/ref/pos//geo,{W84,N11d32m32.901643s,E43d09m26.726752s,25.9588}
+;; %01253%set,/par/ref/arp//geo,{W84,N11d32m32.901643s,E43d9m26.726752s,25.9588}
 
 ;; elevation mask
 ;; /par/lock/elm, -90,90
 ;; for file set,/par/out/elm/cur/file/a,10
-;;          create,/log/fielanme:a
+;;          create,/log/filename:a
 ;;          em,/cur/file/a,def:30
 ;; first sets elevation mask for log capture
 ;; second makes a file with the current file name
 ;; third sets the output iteratoin to 30 seconds
 
-;; base statoin params
+;; base station params 
 ;; #set,/par/pos/elm,15                 # Set elevation mask
 ;; #set,/par/ref/avg/span,180
 ;; #set,/par/ref/avg/mode,on
 ;; #em,/dev/tcpo/c,/msg/rtcm3/{1004,1012,1006:10,1008:10}:1  # Enable RTCM3 messages at 1Hz
 
+(defun emit-rtcm (stream)
+  (javad-generic-command stream "em,/dev/tcpo/c,/msg/rtcm3/{1004,1012,1006:10,1008:10}:1")
+  (force-output stream)
+  (javad-read stream))
 
+(defun average-on (stream &key (duration 180) (reset nil))
+  ;; don't forget to run average-off when you're done!!!
+  (javad-generic-command stream (format nil "set,/par/ref/avg/span,~D" duration))
+  (javad-generic-command stream "set,/par/ref/avg/mode,on")
+  (if reset
+      (javad-generic-command stream "set,/par/reset,y"))
+  (force-output stream))
+
+(defun average-query (stream)
+  (javad-generic-command stream "print,/par/ref/avg/mode")
+  (force-output stream)
+  (javad-read stream))
+
+(defun average-off (stream)
+  (javad-generic-command stream "set,/par/ref/avg/mode,off")
+  (force-output stream))
 
 (defun get-pos-apc (stream)
   (javad-generic-command stream "print,/par/ref/pos/gps/geo")
   (javad-read stream))
 
+(defun print-version (stream)
+  (javad-generic-command stream "%FIRMWARE%print,rcv/ver")
+  (javad-generic-command stream "%SERIAL%print,/par/rcv/sn")
+  (javad-generic-command stream "%ID%print,/par/rcv/id")
+  (force-output stream)
+  (javad-read stream))
+
+(defun create-log (stream filename &key (interval 30) (elevation-mask-deg 15) (a-or-b? "a") (remove? nil))
+  (if remove? (javad-generic-command stream (format nil "remove,/log/~A" filename)))
+  (javad-generic-command stream (format nil "set,/par/out/elm/cur/file/~A,~D" a-or-b? elevation-mask-deg))
+  (javad-generic-command stream (format nil "create,/log/~A:~A" filename a-or-b?))
+  (javad-generic-command stream (format nil "em,/cur/file/~A,def:~D" a-or-b? interval)))
+
+(defun stop-log (stream a-or-b?)
+  (javad-generic-command stream (format nil "dm,/cur/file/~A" a-or-b?)))
+
+#+ccl
+(defun download-file (stream remote-name &key (local-name nil local-name-supplied?))
+  (if (not local-name-supplied?) (setf local-name remote-name))
+  ;; first get target file size.
+  (let* ((javad-message (progn (javad-generic-command stream (format nil "print,/log/~A&size" remote-name))
+			       (javad-parse-message stream)))
+	 (size (parse-integer
+		(ccl::decode-string-from-octets (slot-value javad-message 'data))
+		:junk-allowed t)))
+    (javad-read stream)
+    (javad-generic-command stream (format nil "print,/log/~A&content" remote-name))
+    (with-open-file (o local-name
+    		       :direction :output
+    		       :element-type 'unsigned-byte
+    		       :if-exists :supersede)
+      (dotimes (i size)
+    	(write-byte (read-byte stream nil) o)))))
 
 ;;make struct of block before, fill it out, post process with last block type for dataleng vs seq
 (defun dtp-transmitter-prep (data &key (block-size 512) (block-num 0) (crc 0))
