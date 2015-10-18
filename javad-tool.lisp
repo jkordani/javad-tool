@@ -97,6 +97,11 @@
       (setf (slot-value message 'data) (make-array length :element-type '(unsigned-byte 8) :fill-pointer 0 :adjustable t))
       (dotimes (j length)
 	(vector-push (read-byte is) (slot-value message 'data)))
+      (loop for c = (read-char-no-hang is nil)
+	 while c
+	 while (member (char-code c) '(#x0d #x0a))
+	 do (format t "erasing one newline")
+	 finally (if (not (null c)) (progn (format t "putting back ~D" (char-code c))(unread-char c is))))
       message)))
 
 (defun javad-parse-vg-message (vg-message)
@@ -172,6 +177,11 @@
 ;; #set,/par/ref/avg/mode,on
 ;; #em,/dev/tcpo/c,/msg/rtcm3/{1004,1012,1006:10,1008:10}:1  # Enable RTCM3 messages at 1Hz
 
+;; file list
+;; list
+;; /log:on
+;; /cur/file/a|b&size  ;;prints name or sets filename to be currently active file a or b
+
 (defun emit-rtcm (stream)
   (javad-generic-command stream "em,/dev/tcpo/c,/msg/rtcm3/{1004,1012,1006:10,1008:10}:1")
   (force-output stream)
@@ -205,11 +215,32 @@
   (force-output stream)
   (javad-read stream))
 
+(defun set-network-ip (stream ip netmask &key (gw nil gw-supplied?) (reset nil))
+  (javad-generic-command stream (format nil "set,/par/net/ip/addr,~A" ip))
+  (javad-generic-command stream (format nil "set,/par/net/ip/mask,~A" netmask))
+  (if gw-supplied?
+      (javad-generic-command stream (format nil "set,/par/net/ip/gw,~A" gw)))
+  (if reset
+      (javad-generic-command stream "set,/par/reset,y")))
+
+(defun get-network-ip (stream)
+  (javad-generic-command stream "print,/par/net/ip/addr")
+  (javad-generic-command stream "print,/par/net/ip/mask")
+  (javad-generic-command stream "print,/par/net/ip/gw")
+  (javad-read stream))
+
+(defun javad-reset (stream)
+  (javad-generic-command stream "set,/par/reset,y"))
+
 (defun create-log (stream filename &key (interval 30) (elevation-mask-deg 15) (a-or-b? "a") (remove? nil))
   (if remove? (javad-generic-command stream (format nil "remove,/log/~A" filename)))
   (javad-generic-command stream (format nil "set,/par/out/elm/cur/file/~A,~D" a-or-b? elevation-mask-deg))
   (javad-generic-command stream (format nil "create,/log/~A:~A" filename a-or-b?))
   (javad-generic-command stream (format nil "em,/cur/file/~A,def:~D" a-or-b? interval)))
+
+(defun list-log-names (stream)
+  (javad-generic-command stream "print,/log:on")
+  (javad-read stream))
 
 (defun stop-log (stream a-or-b?)
   (javad-generic-command stream (format nil "dm,/cur/file/~A" a-or-b?)))
@@ -223,7 +254,6 @@
 	 (size (parse-integer
 		(ccl::decode-string-from-octets (slot-value javad-message 'data))
 		:junk-allowed t)))
-    (javad-read stream)
     (javad-generic-command stream (format nil "print,/log/~A&content" remote-name))
     (with-open-file (o local-name
     		       :direction :output
@@ -231,6 +261,7 @@
     		       :if-exists :supersede)
       (dotimes (i size)
     	(write-byte (read-byte stream nil) o)))))
+
 
 ;;make struct of block before, fill it out, post process with last block type for dataleng vs seq
 (defun dtp-transmitter-prep (data &key (block-size 512) (block-num 0) (crc 0))
@@ -264,33 +295,74 @@
 					:block-num (1+ block-num)
 					:crc new-crc))))))
 
-(defun dtp-receiver (stream &key (state '(:init t :task ack)))
+(defun download-file-dtp (stream remote-file &key (blocksize 512) (timeout 10))
+  (let* ((javad-message (progn (javad-generic-command stream (format nil "print,/log/~A&size" remote-file))
+			       (javad-parse-message stream)))
+	 (size (parse-integer
+		(ccl::decode-string-from-octets (slot-value javad-message 'data))
+		:junk-allowed t))
+	 (state nil))
+
+  ;;;;;CLEAR WHITESPACE!!!!!!
+    
+    (format t "blocks to get should be ~D~%" (ceiling size blocksize))
+    (javad-generic-command stream (format nil "get,/log/~A:{~D,~D}" remote-file timeout blocksize))
+    (setf state (dtp-receiver stream :blocksize blocksize))
+    (dotimes (i (ceiling size blocksize))
+      (setf state (dtp-receiver stream :blocksize blocksize :state state)))
+
+    state))
+
+(defun dtp-receiver (stream &key (state '(:init t :task ack)) (blocksize 512))
+  (declare  (optimize (debug 3) (safety 3)))
+  (force-output)
+  (format t "~A blocksize:~A ~%" state blocksize)
+  (force-output)
   (let ((type nil))
     (cond 
-      ((getf state :init) (setf (getf state :init) nil)
+      ((getf state :init)
+       (setf (getf state :init) nil)
+       (format t "init, sending nack~%")
        (setf (getf state :task) 'rcv)
        (setf (getf state :blocks) nil)
        (setf (getf state :next-block) 0)
        (setf (getf state :continue) t)
        (write-byte #x15 stream) ;nack to init transfer
-       )
+       (force-output stream))
      
-      ((equal (getf state :task) 'ack) 
+      ((equal (getf state :task) 'ack)
+       (format t "sending ack~%")
+       (force-output stream)
        (write-byte #x06 stream)
+       (force-output stream)
        (setf (getf state :task) 'rcv)
        (setf (getf state :continue) t)
-       (1+ (getf state :next-block)))
+       (incf (getf state :next-block))
+       (force-output stream))
       
       ((equal (getf state :task) 'rcv)
-       (princ "inner rcv")
+       (format t "inner rcv~%")
        (setf (getf state :task) 'ack)
        (setf type (read-byte stream))
-       (setf (getf state :blocks) (append (getf state :blocks) (list type)))
+       (read-byte stream) ;; either block num or last block byte count
+       (read-byte stream)
+       (setf (getf state :blocks) (push
+				   (list type
+					 (let ((vector (make-array blocksize
+								   :element-type '(unsigned-byte 8)
+								   :fill-pointer 0)))
+					   (dotimes (i blocksize)
+					     (setf (aref vector i) (read-byte stream)))
+					   vector))
+				   (getf state :blocks)))
+       ;;throw away checksum and end byte for now
+       (read-byte stream)
+       (read-byte stream)
+       (read-byte stream)
        (if (= type #x02)
 	   (setf (getf state :continue) t)
-	   (setf (getf state :continue) nil)))))
-  (ccl:stream-force-output stream)
-  state)
+	   (setf (getf state :continue) nil))))
+    state))
 
 (defun dtp-transmitter (stream &key state)
   ;assumes blocks are loaded in state
