@@ -240,6 +240,7 @@
 
 (defun list-log-names (stream)
   (javad-generic-command stream "print,/log:on")
+  (javad-generic-command stream "print,/cur/file:on")
   (javad-read stream))
 
 (defun stop-log (stream a-or-b?)
